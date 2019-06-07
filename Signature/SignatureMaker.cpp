@@ -5,6 +5,7 @@
 #include "Configurations.h"
 #include <iostream>
 #include <future>
+#include <memory>
 
 using namespace std;
 
@@ -17,17 +18,22 @@ void SignatureMaker::makeSignature()
 	if (!_ofile.is_open())
 		throw exception("Can't open file for writing");
 
-	cout << "Start processing.." << endl;
-	while (_input_offset < input_size)
-	{
-		streampos read_size = MAX_READ_BUFFER_SIZE;
-		if (read_size + _input_offset > input_size)
-			read_size = input_size - _input_offset;
+	streampos read_size = MAX_READ_BUFFER_SIZE;
+	if (read_size + _input_offset > input_size)
+		read_size = input_size - _input_offset;
 
-		processPortion(read_size);
+	unique_ptr<char[]> buffer(new char[read_size]);
+
+	while (read_size)
+	{
+		readPortion(read_size, buffer.get());
+		processPortion(read_size, buffer.get());
 
 		_input_offset += read_size;
 		cout << _input_offset << " bytes from " << input_size << " are processed" << endl;
+
+		if (read_size + _input_offset > input_size)
+			read_size = input_size - _input_offset;
 	}
 
 	_ofile.close();
@@ -44,12 +50,43 @@ streampos SignatureMaker::inputSize()
 	return size;
 }
 
-void SignatureMaker::processPortion(streampos read_size)
+void SignatureMaker::readPortion(streampos read_size, char* buffer)
 {
-	streampos smooth_blocks_count = read_size / _blocksize;
+	list<future<void>> waits;
+	streampos size_per_thread = read_size / THREADS_COUNT;
+	if (read_size % THREADS_COUNT)
+		size_per_thread += 1;
+
+	streampos readed = 0;
+	while (size_per_thread)
+	{
+		waits.push_back(async([=] {
+			std::ifstream inf(_input_file, std::ios::in | std::ios::binary);
+			if (!inf.is_open())
+				throw std::exception("Can't open file");
+			inf.seekg(_input_offset + readed);
+			inf.read(buffer + readed, size_per_thread);
+			inf.close();
+		}));
+
+		readed += size_per_thread;
+		if (size_per_thread > read_size - readed)
+			size_per_thread = read_size - readed;
+
+	}
+
+	for_each(waits.begin(), waits.end(), [](future<void>& w)
+	{
+		w.get();
+	});
+}
+
+void SignatureMaker::processPortion(streampos size, char* buffer)
+{
+	streampos smooth_blocks_count = size / _blocksize;
 	streampos blocks_count = smooth_blocks_count;
 
-	if (read_size % _blocksize)
+	if (size % _blocksize)
 		blocks_count += 1;
 
 	streampos output_size = blocks_count * HASH_SIZE;
@@ -67,13 +104,14 @@ void SignatureMaker::processPortion(streampos read_size)
 			write_size = process_blocks_count * HASH_SIZE;
 		}
 
-		processed_blocks += processBlocks(process_blocks_count, read_size % _blocksize, smooth_blocks_count, write_size, processed_blocks);
+		processed_blocks += processBlocks(process_blocks_count, size % _blocksize, smooth_blocks_count, write_size, processed_blocks, buffer);
 		output_size -= write_size;
 		blocks_count -= process_blocks_count;
 	}
 }
 
-streampos SignatureMaker::processBlocks(streampos blocks_count, unsigned long long extra_block_size, streampos extra_block_number, streampos write_size, streampos processed_blocks)
+streampos SignatureMaker::processBlocks(streampos blocks_count, unsigned long long extra_block_size, streampos extra_block_number, streampos write_size, 
+	streampos processed_blocks, char* buffer)
 {
 	streampos blocks_per_thread = blocks_count / THREADS_COUNT;
 	int additional_blocks = blocks_count % THREADS_COUNT;
@@ -96,7 +134,7 @@ streampos SignatureMaker::processBlocks(streampos blocks_count, unsigned long lo
 
 		if (begin_block == end_block)
 			break;
-		waits.push_back(async(launch::async, SignatureTask(begin_block, end_block, extra_block_number, _blocksize, extra_block_size, _input_file.c_str(), out_buffer.get(), processed_blocks, _input_offset)));
+		waits.push_back(async(launch::async, SignatureTask(begin_block, end_block, extra_block_number, _blocksize, extra_block_size, buffer, out_buffer.get(), processed_blocks)));
 	}
 
 	for_each(waits.begin(), waits.end(), [](future<void>& w)
