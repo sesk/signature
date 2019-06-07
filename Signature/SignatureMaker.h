@@ -21,9 +21,9 @@ class SignatureMaker
 	streampos _input_offset;
 	ofstream _ofile;
 
-	// 
-	void processPortion(streampos read_size);
-	streampos processBlocks(streampos blocks_count, unsigned long long extra_block_size, streampos extra_block_number, streampos write_size, streampos processed_blocks);
+	void readPortion(streampos read_size, char* buffer);
+	void processPortion(streampos size, char* buffer);
+	streampos processBlocks(streampos blocks_count, unsigned long long extra_block_size, streampos extra_block_number, streampos write_size, streampos processed_blocks, char* buffer);
 
 	streampos inputSize();
 public:
